@@ -3,7 +3,241 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider = "postgresql"
+}
+
+enum Role {
+  ADMIN
+  STAFF
+  CUSTOMER
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  BLOCKED
+}
+
+enum AccountType {
+  SAVINGS
+  CURRENT
+  BUSINESS
+}
+
+enum AccountStatus {
+  ACTIVE
+  FROZEN
+  CLOSED
+}
+
+enum TxType {
+  DEPOSIT
+  WITHDRAWAL
+  TRANSFER
+  LOAN_DISBURSEMENT
+  LOAN_REPAYMENT
+}
+
+enum TxStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REVERSED
+}
+
+enum RequestType {
+  DEPOSIT
+  WITHDRAWAL
+}
+
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum LoanStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  ACTIVE
+  COMPLETED
+}
+
+enum RepaymentStatus {
+  PENDING
+  PAID
+  OVERDUE
+}
+
+model User {
+  id           String     @id @default(cuid())
+  name         String
+  email        String     @unique
+  passwordHash String
+  role         Role       @default(CUSTOMER)
+  status       UserStatus @default(ACTIVE)
+  phone        String?
+  createdAt    DateTime   @default(now())
+
+  accounts              Account[]
+  transactions          Transaction[]  @relation("CreatedBy")
+  flaggedTxs            Transaction[]  @relation("FlaggedBy")
+  moneyRequests         MoneyRequest[]
+  loans                 Loan[]
+  loanNotes             LoanNote[]
+  reviewedMoneyRequests MoneyRequest[] @relation("ReviewedBy")
+  reviewedLoans         Loan[]         @relation("ReviewedBy")
+  approvedLoans         Loan[]         @relation("ApprovedBy")
+
+  @@index([role])
+  @@index([status])
+}
+
+model Account {
+  id                     String        @id @default(cuid())
+  accountNumber          String        @unique
+  userId                 String
+  type                   AccountType
+  balance                Decimal       @default(0) @db.Decimal(14, 2)
+  status                 AccountStatus @default(ACTIVE)
+  transactionPinHash     String?
+  dailyTransferLimit     Decimal       @default(10000) @db.Decimal(14, 2)
+  singleTransactionLimit Decimal       @default(5000) @db.Decimal(14, 2)
+  minBalance             Decimal       @default(100) @db.Decimal(14, 2)
+  failedPinAttempts      Int           @default(0)
+  pinLockedUntil         DateTime?
+  createdAt              DateTime      @default(now())
+
+  user                 User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sentTransactions     Transaction[]  @relation("SenderAccount")
+  receivedTransactions Transaction[]  @relation("ReceiverAccount")
+  moneyRequests        MoneyRequest[]
+  loans                Loan[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+model Transaction {
+  id                String   @id @default(cuid())
+  transactionId     String   @unique
+  idempotencyKey    String?  @unique
+  type              TxType
+  amount            Decimal  @db.Decimal(14, 2)
+  fee               Decimal  @default(0) @db.Decimal(14, 2)
+  status            TxStatus @default(COMPLETED)
+  description       String?
+  senderAccountId   String?
+  receiverAccountId String?
+  createdById       String
+  flagged           Boolean  @default(false)
+  flagReason        String?
+  flaggedById       String?
+  createdAt         DateTime @default(now())
+
+  senderAccount   Account?        @relation("SenderAccount", fields: [senderAccountId], references: [id])
+  receiverAccount Account?        @relation("ReceiverAccount", fields: [receiverAccountId], references: [id])
+  createdBy       User            @relation("CreatedBy", fields: [createdById], references: [id])
+  flaggedBy       User?           @relation("FlaggedBy", fields: [flaggedById], references: [id])
+  moneyRequest    MoneyRequest?
+  loan            Loan?           @relation("DisbursementTx")
+  repayments      LoanRepayment[]
+
+  @@index([senderAccountId])
+  @@index([receiverAccountId])
+  @@index([createdById])
+  @@index([createdAt])
+  @@index([flagged])
+}
+
+model MoneyRequest {
+  id            String        @id @default(cuid())
+  accountId     String
+  userId        String
+  type          RequestType
+  amount        Decimal       @db.Decimal(14, 2)
+  description   String?
+  requestDate   DateTime      @default(now())
+  status        RequestStatus @default(PENDING)
+  reviewedById  String?
+  reviewedAt    DateTime?
+  reviewNote    String?
+  transactionId String?       @unique
+
+  account     Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviewedBy  User?        @relation("ReviewedBy", fields: [reviewedById], references: [id])
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@index([userId])
+  @@index([accountId])
+  @@index([status])
+}
+
+model Loan {
+  id               String     @id @default(cuid())
+  userId           String
+  accountId        String
+  loanType         String
+  requestedAmount  Decimal    @db.Decimal(14, 2)
+  approvedAmount   Decimal?   @db.Decimal(14, 2)
+  durationMonths   Int
+  interestRate     Decimal    @db.Decimal(5, 2)
+  monthlyIncome    Decimal    @db.Decimal(14, 2)
+  employmentStatus String
+  description      String?
+  status           LoanStatus @default(PENDING)
+  remainingBalance Decimal    @default(0) @db.Decimal(14, 2)
+  reviewedById     String?
+  approvedById     String?
+  disbursementTxId String?    @unique
+  createdAt        DateTime   @default(now())
+
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account        Account         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  reviewedBy     User?           @relation("ReviewedBy", fields: [reviewedById], references: [id])
+  approvedBy     User?           @relation("ApprovedBy", fields: [approvedById], references: [id])
+  disbursementTx Transaction?    @relation("DisbursementTx", fields: [disbursementTxId], references: [id])
+  repayments     LoanRepayment[]
+  notes          LoanNote[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+model LoanRepayment {
+  id            String          @id @default(cuid())
+  loanId        String
+  installmentNo Int
+  dueDate       DateTime
+  amount        Decimal         @db.Decimal(14, 2)
+  status        RepaymentStatus @default(PENDING)
+  paidAt        DateTime?
+  transactionId String?
+
+  loan        Loan         @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@index([loanId])
+  @@index([status])
+}
+
+model LoanNote {
+  id        String   @id @default(cuid())
+  loanId    String
+  authorId  String
+  note      String
+  createdAt DateTime @default(now())
+
+  loan   Loan @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  author User @relation(fields: [authorId], references: [id])
+
+  @@index([loanId])
+}
+
+model SystemSetting {
+  key   String @id
+  value String
 }
